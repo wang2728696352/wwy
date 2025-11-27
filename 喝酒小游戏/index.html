@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta http-equiv="X-Content-Type-Options" content="nosniff" />
+<title>Пивной Сокобан - Пивная игра Сокобан</title>
+<style>
+  :root { --bg:#0f1113; --panel:#111; --accent:#f5c542; }
+  html,body{height:100%;margin:0;font-family:Arial, sans-serif;background:var(--bg);color:#fff;text-size-adjust:100%;-webkit-text-size-adjust:100%;}
+  .screen{position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;-webkit-user-select:none;user-select:none;}
+  button{cursor:pointer;border:none;border-radius:8px;padding:10px 16px;margin:6px;background:#333;color:#fff;font-size:16px;-webkit-user-select:none;user-select:none;}
+  button:hover{background:#555}
+  h1{margin:8px}
+  /* 主菜单 */
+  #main-menu{display:flex}
+  /* 关卡选择 */
+  #level-select .levels{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;max-width:920px}
+  .level-btn{width:160px;height:72px;display:flex;align-items:center;justify-content:center;background:#222;border-radius:8px;font-size:18px}
+  /* 游戏容器 */
+  #game-container{display:flex;background:#000;align-items:center;justify-content:center}
+  #hud{position:absolute;left:18px;top:18px;z-index:30;display:flex;flex-direction:column;gap:8px}
+  #hud button{padding:6px 10px;font-size:14px}
+  /* 胜利框 */
+  #winBox{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.96);color:#222;padding:20px 26px;border-radius:10px;display:none;z-index:60;text-align:center;-webkit-user-select:none;user-select:none;}
+  #winBox button{margin:6px}
+  /* loading overlay */
+  #loadingOverlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;z-index:50;color:#fff}
+  /* small info */
+  .info {opacity:0.85;font-size:13px}
+  /* 音乐控制 */
+  #music-control{position:absolute;right:18px;top:18px;z-index:30}
+  #music-control button{background:rgba(0,0,0,0.7);color:#fff}
+</style>
+</head>
+<body>
+
+<!-- 主菜单 -->
+<div id="main-menu" class="screen">
+  <h1 style="font-size:56px">🍺 Пивной Сокобан</h1>
+  <div style="display:flex;flex-direction:column;align-items:center">
+    <div style="margin-bottom:14px">
+      <button id="startGameBtn">Начать игру</button>
+      <button id="levelSelectBtn">Выбор уровня</button>
+      <button onclick="openSettings()">Настройки</button>
+    </div>
+    <div class="info">Цель: Толкайте открывашки (ящики) на пиво → Воспроизводится анимация питья → Выпейте всё пиво, чтобы пройти уровень</div>
+    <div class="info">Новая функция: Теперь можно толкать пустые бутылки!</div>
+  </div>
+</div>
+
+<!-- 关卡选择 -->
+<div id="level-select" class="screen">
+  <h1 style="font-size:44px">Выбор уровня</h1>
+  <div class="levels" id="levelsContainer" style="margin:18px"></div>
+  <div style="margin-top:16px">
+    <button onclick="returnToMenu()">Вернуться в главное меню</button>
+  </div>
+</div>
+
+<!-- 游戏界面 -->
+<div id="game-container" class="screen">
+  <div style="position:relative">
+    <canvas id="gameCanvas" width="680" height="680"></canvas>
+    <div id="hud" style="">
+      <div>Уровень <span id="currentLevelLabel">1</span></div>
+      <div>Шаги: <span id="moveCount">0</span></div>
+      <div><button onclick="restartLevel()">Сброс</button><button onclick="openLevelSelect()">Выйти к выбору уровня</button></div>
+    </div>
+    <div id="music-control">
+      <button id="toggleMusic">🔊 Музыка</button>
+    </div>
+  </div>
+</div>
+
+<!-- 胜利提示 -->
+<div id="winBox">
+  <div id="winText" style="font-size:18px;margin-bottom:10px">Поздравляем! Уровень пройден!</div>
+  <div>
+    <button id="btnNext">Следующий уровень</button>
+    <button id="btnReplay">Переиграть уровень</button>
+    <button onclick="openLevelSelect()">Вернуться к выбору уровня</button>
+  </div>
+</div>
+
+<!-- Loading overlay -->
+<div id="loadingOverlay"><div style="text-align:center"><h2>Загрузка ресурсов…</h2></div></div>
+
+<script>
+/* =========================
+   配置与资源
+   ========================= */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const TILE = 60;      // 12 * 60 = 720
+const COLS = 12, ROWS = 12;
+
+const imagesToLoad = {
+  bg: "./images/bg_room.png",
+  floor: "./images/floor.png",
+  wall: "./images/wall.png",
+  player: "./images/player.png",
+  box: "./images/opener.png",
+  beer: "./images/beer.png",
+  drink: "./images/drink.gif",
+  emptyBeer: "./images/empty_beer.png"
+};
+
+// 添加音频资源
+const audioToLoad = {
+  bgMusic: "./audio/background-music.mp3",
+  drinkSound: "./audio/drink-sound.mp3"
+};
+
+let imgs = {};
+let audio = {};
+let loaded = 0, totalImgs = Object.keys(imagesToLoad).length;
+let audioLoaded = 0, totalAudio = Object.keys(audioToLoad).length;
+let resourcesReady = false;
+
+// 音频状态
+let musicEnabled = true; // 默认启用音乐
+let audioInitialized = false;
+
+// 初始化音频
+function initAudio() {
+  if (audioInitialized) return;
+  
+  // 设置音频属性
+  if (audio.bgMusic) {
+    audio.bgMusic.loop = true;
+    audio.bgMusic.volume = 0.3;
+  }
+  
+  if (audio.drinkSound) {
+    audio.drinkSound.volume = 0.7;
+  }
+  
+  audioInitialized = true;
+  console.log("Аудио инициализировано");
+}
+
+// 播放背景音乐
+function playBackgroundMusic() {
+  if (!musicEnabled || !audio.bgMusic) return;
+  
+  // 重置并播放音乐
+  audio.bgMusic.currentTime = 0;
+  audio.bgMusic.play().catch(e => {
+    console.log("Ошибка воспроизведения музыки:", e);
+  });
+}
+
+// 播放喝啤酒音效
+function playDrinkSound() {
+  if (!musicEnabled || !audio.drinkSound) return;
+  
+  audio.drinkSound.currentTime = 0;
+  audio.drinkSound.play().catch(e => {
+    console.log("Ошибка воспроизведения звука питья:", e);
+  });
+}
+
+// 切换音乐
+function toggleMusic() {
+  musicEnabled = !musicEnabled;
+  const button = document.getElementById('toggleMusic');
+  
+  if (musicEnabled) {
+    button.innerHTML = "🔊 Музыка";
+    playBackgroundMusic();
+  } else {
+    button.innerHTML = "🔇 Музыка";
+    if (audio.bgMusic) {
+      audio.bgMusic.pause();
+    }
+  }
+}
+
+// 用户交互后初始化音频
+function initAudioOnUserInteraction() {
+  if (!audioInitialized) {
+    initAudio();
+  }
+  playBackgroundMusic();
+}
+
+function preload() {
+  document.getElementById('loadingOverlay').style.display = 'flex';
+  
+  // 预加载图片
+  for (const k in imagesToLoad) {
+    const img = new Image();
+    img.src = imagesToLoad[k];
+    img.onload = () => {
+      loaded++;
+      console.log(`Загружено изображение: ${k}`);
+      if (loaded === totalImgs && audioLoaded === totalAudio) {
+        resourcesReady = true;
+        document.getElementById('loadingOverlay').style.display = 'none';
+        initAudio();
+        console.log("Все ресурсы загружены");
+      }
+    };
+    img.onerror = () => {
+      console.error("Ошибка загрузки изображения:", imagesToLoad[k]);
+      loaded++;
+      if (loaded === totalImgs && audioLoaded === totalAudio) {
+        resourcesReady = true;
+        document.getElementById('loadingOverlay').style.display = 'none';
+        initAudio();
+      }
+    };
+    imgs[k] = img;
+  }
+  
+  // 预加载音频
+  for (const k in audioToLoad) {
+    const sound = new Audio();
+    sound.src = audioToLoad[k];
+    sound.preload = "auto";
+    sound.oncanplaythrough = () => {
+      audioLoaded++;
+      console.log(`Загружено аудио: ${k}`);
+      if (loaded === totalImgs && audioLoaded === totalAudio) {
+        resourcesReady = true;
+        document.getElementById('loadingOverlay').style.display = 'none';
+        initAudio();
+      }
+    };
+    sound.onerror = () => {
+      console.error("Ошибка загрузки аудио:", audioToLoad[k]);
+      audioLoaded++;
+      if (loaded === totalImgs && audioLoaded === totalAudio) {
+        resourcesReady = true;
+        document.getElementById('loadingOverlay').style.display = 'none';
+        initAudio();
+      }
+    };
+    audio[k] = sound;
+  }
+}
+preload();
+
+/* =========================
+   5 个重新设计的 12x12 关卡（字符地图）
+   ========================= */
+
+const LEVELS = [
+`############
+############
+############
+#####B######
+#####.######
+#####O.OB###
+###B.OP#####
+######O#####
+######B#####
+############
+############
+############`,
+/* Level 2 */
+`############
+############
+###P..######
+###.OO#######
+###.O.###B###
+#####.###B###
+#####....B###
+####...#..####
+####...########
+############
+############
+############`,
+/* Level 3 - 重新设计为正常推箱子关卡 */
+`############
+############
+############
+#####....###
+###B.O##.###
+##BBO.O..P##
+##BB.O.O.###
+#######..###
+############
+############
+############
+############`,
+/* Level 4 - 重新设计为正常推箱子关卡 */
+`############
+############
+############
+#####..#.P##
+####...#..##
+####O.O.O.##
+####.O##..##
+####.O.#.###
+##BBBBB..###
+############
+############
+############`,
+/* Level 5 - 重新设计为正常推箱子关卡 */
+`############
+############
+############
+#####....###
+#####OOO.###
+###P.OBB.###
+###.OBBB####
+######..####
+############
+############
+############
+############`
+].map(s => s.split('\n').map(r => r.split('')));
+
+/* =========================
+   运行时数据结构与状态
+   ========================= */
+let map = [];            // 2D numeric map: 0 floor,1 wall,3 box,4 beer,10 emptyBeer placeholder
+let playerX = 0, playerY = 0;
+let currentLevel = 0;
+let drinking = false;
+let targetX = null, targetY = null; // where beer was
+let moveCount = 0;
+let gameActive = false;
+
+/* =========================
+   帮助：从字符地图加载 map
+   ========================= */
+function loadLevel(id) {
+  currentLevel = id;
+  const raw = LEVELS[id-1];
+  map = Array.from({length:ROWS}, () => Array(COLS).fill(0));
+  targetX = targetY = null;
+  moveCount = 0;
+  document.getElementById('moveCount').innerText = moveCount;
+  document.getElementById('currentLevelLabel').innerText = id;
+
+  for (let y=0;y<ROWS;y++){
+    for (let x=0;x<COLS;x++){
+      const ch = raw[y][x];
+      if (ch === '#') map[y][x] = 1;
+      else if (ch === 'P') { playerX = x; playerY = y; map[y][x] = 0; }
+      else if (ch === 'O') map[y][x] = 3;
+      else if (ch === 'B') map[y][x] = 4;
+      else map[y][x] = 0;
+    }
+  }
+  gameActive = true;
+  drinking = false;
+  // 渲染首帧
+  drawFrame();
+}
+
+/* =========================
+   绘制：背景、地板、墙、箱子、啤酒、空瓶、玩家或喝酒动画
+   ========================= */
+function drawFrame() {
+  // 背景 fill
+  ctx.fillStyle = '#222';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // draw background image scaled as cover under tiles
+  const bg = imgs.bg;
+  if (bg && bg.complete) {
+    const scale = Math.max(canvas.width/bg.width, canvas.height/bg.height);
+    const w = bg.width * scale, h = bg.height * scale;
+    const bx = (canvas.width - w)/2, by = (canvas.height - h)/2;
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(bg, bx, by, w, h);
+    ctx.globalAlpha = 1;
+  }
+
+  // tiles
+  for (let y=0;y<ROWS;y++){
+    for (let x=0;x<COLS;x++){
+      const px = x * TILE, py = y * TILE;
+      // floor
+      if (imgs.floor && imgs.floor.complete) ctx.drawImage(imgs.floor, px, py, TILE, TILE);
+      else { ctx.fillStyle='#333'; ctx.fillRect(px,py,TILE,TILE); }
+
+      // beer (target) - draw before box so box covers it
+      if (map[y][x] === 4) {
+        if (imgs.beer && imgs.beer.complete) ctx.drawImage(imgs.beer, px, py, TILE, TILE);
+      }
+      // empty beer (after drinking) stored as 10
+      if (map[y][x] === 10) {
+        if (imgs.emptyBeer && imgs.emptyBeer.complete) ctx.drawImage(imgs.emptyBeer, px, py, TILE, TILE);
+      }
+      // walls
+      if (map[y][x] === 1) {
+        if (imgs.wall && imgs.wall.complete) ctx.drawImage(imgs.wall, px, py, TILE, TILE);
+        else { ctx.fillStyle='#666'; ctx.fillRect(px,py,TILE,TILE); }
+      }
+      // boxes
+      if (map[y][x] === 3) {
+        if (imgs.box && imgs.box.complete) ctx.drawImage(imgs.box, px, py, TILE, TILE);
+      }
+    }
+  }
+
+  // player or drinking animation
+  const px = playerX * TILE, py = playerY * TILE;
+  if (drinking) {
+    if (imgs.drink && imgs.drink.complete) ctx.drawImage(imgs.drink, px, py, TILE, TILE);
+  } else {
+    if (imgs.player && imgs.player.complete) ctx.drawImage(imgs.player, px, py, TILE, TILE);
+  }
+}
+
+/* =========================
+   辅助：地图坐标有效与可走检测
+   ========================= */
+function inBounds(x,y){ return x>=0 && x<COLS && y>=0 && y<ROWS; }
+function isWall(x,y) { return !inBounds(x,y) || map[y][x] === 1; }
+function isBox(x,y) { return inBounds(x,y) && map[y][x] === 3; }
+function isBeer(x,y) { return inBounds(x,y) && map[y][x] === 4; }
+function isEmptyBottle(x,y) { return inBounds(x,y) && map[y][x] === 10; }
+function isEmpty(x,y) { return inBounds(x,y) && (map[y][x] === 0); }
+
+/* =========================
+   键盘事件：移动 + 推箱子到啤酒触发喝酒
+   ========================= */
+document.addEventListener('keydown', (e) => {
+  if (!gameActive) return;
+  if (drinking) return;
+  let dx = 0, dy = 0;
+  if (e.key === 'ArrowUp') dy = -1;
+  else if (e.key === 'ArrowDown') dy = 1;
+  else if (e.key === 'ArrowLeft') dx = -1;
+  else if (e.key === 'ArrowRight') dx = 1;
+  else return;
+
+  const nx = playerX + dx, ny = playerY + dy;
+  if (isWall(nx,ny)) return;
+
+  // push case - 箱子
+  if (isBox(nx,ny)) {
+    const bx = nx + dx, by = ny + dy;
+    if (isWall(bx,by) || isBox(bx,by) || isEmptyBottle(bx,by)) return; // cannot push
+    // if pushing into a beer
+    if (isBeer(bx,by)) {
+      // remove box from its tile
+      map[ny][nx] = 0;
+      // record target location
+      targetX = bx; targetY = by;
+      // remove beer visually (we'll set empty after drinking)
+      map[by][bx] = 0;
+      // move player into box's previous spot
+      playerX = nx; playerY = ny;
+      moveCount++;
+      document.getElementById('moveCount').innerText = moveCount;
+      // start drink animation
+      startDrinkAnimation();
+    } else if (isEmpty(bx,by)) {
+      // standard push
+      map[by][bx] = 3;
+      map[ny][nx] = 0;
+      playerX = nx; playerY = ny;
+      moveCount++;
+      document.getElementById('moveCount').innerText = moveCount;
+      drawFrame();
+      // after move check win (if no beers left)
+      if (checkWin()) showWin();
+    }
+  } 
+  // push case - 空酒瓶
+  else if (isEmptyBottle(nx,ny)) {
+    const bx = nx + dx, by = ny + dy;
+    if (isWall(bx,by) || isBox(bx,by)) return; // cannot push into wall or box
+    
+    // if pushing into a beer, swap positions
+    if (isBeer(bx,by)) {
+      // swap empty bottle and beer
+      map[by][bx] = 10; // beer position becomes empty bottle
+      map[ny][nx] = 4;  // empty bottle position becomes beer
+      playerX = nx; playerY = ny;
+      moveCount++;
+      document.getElementById('moveCount').innerText = moveCount;
+      drawFrame();
+    } 
+    // if pushing into empty space
+    else if (isEmpty(bx,by)) {
+      // move empty bottle
+      map[by][bx] = 10;
+      map[ny][nx] = 0;
+      playerX = nx; playerY = ny;
+      moveCount++;
+      document.getElementById('moveCount').innerText = moveCount;
+      drawFrame();
+    }
+  } 
+  // 移动玩家到空地板或啤酒位置
+  else {
+    if (isEmpty(nx,ny) || isBeer(nx,ny)) {
+      playerX = nx; playerY = ny;
+      moveCount++;
+      document.getElementById('moveCount').innerText = moveCount;
+      drawFrame();
+    }
+  }
+});
+
+/* =========================
+   喝酒动画：播放 GIF（drinks) 一段时间，之后在 target 放 empty beer
+   ========================= */
+function startDrinkAnimation(){
+  drinking = true;
+  playDrinkSound(); // 播放喝啤酒音效
+  drawFrame();
+  // duration: adjust if your drink.gif longer; 900ms is reasonable
+  setTimeout(() => {
+    drinking = false;
+    if (targetX !== null && targetY !== null) {
+      map[targetY][targetX] = 10; // empty beer shows
+      targetX = targetY = null;
+    }
+    drawFrame();
+    // 检查胜利（如果没有 B 剩下）
+    if (checkWin()) showWin();
+  }, 900);
+}
+
+/* =========================
+   胜利检测（地图里没有啤酒 B）
+   ========================= */
+function checkWin(){
+  for (let y=0;y<ROWS;y++){
+    for (let x=0;x<COLS;x++){
+      if (map[y][x] === 4) return false;
+    }
+  }
+  return true;
+}
+
+/* =========================
+   UI: 菜单 / 关卡 / 控制
+   ========================= */
+function hideAllScreens(){
+  document.getElementById('main-menu').style.display = 'none';
+  document.getElementById('level-select').style.display = 'none';
+  document.getElementById('game-container').style.display = 'none';
+  document.getElementById('winBox').style.display = 'none';
+}
+function openMainMenu(){ 
+  hideAllScreens(); 
+  document.getElementById('main-menu').style.display = 'flex'; 
+}
+function openLevelSelect(){ 
+  hideAllScreens(); 
+  document.getElementById('level-select').style.display = 'flex'; 
+}
+function openSettings(){ 
+  // 在设置中显示音乐开关
+  alert('Музыка ' + (musicEnabled ? 'включена' : 'выключена') + '. Используйте кнопку в игровом интерфейсе для переключения.'); 
+}
+function returnToMenu(){ 
+  gameActive = false; 
+  openMainMenu(); 
+}
+function restartLevel(){ 
+  loadLevel(currentLevel); 
+  drawFrame(); 
+}
+
+/* 填充关卡选择按钮 */
+function buildLevelButtons(){
+  const container = document.getElementById('levelsContainer');
+  container.innerHTML = '';
+  for (let i=0;i<LEVELS.length;i++){
+    const btn = document.createElement('button');
+    btn.className = 'level-btn';
+    btn.innerText = `Уровень ${i+1}`;
+    btn.onclick = () => { startLevel(i+1); };
+    container.appendChild(btn);
+  }
+}
+
+/* 开始选定关卡（带资源加载等待） */
+function startLevel(n){
+  if (!resourcesReady) {
+    document.getElementById('loadingOverlay').style.display = 'flex';
+    const t = setInterval(()=>{
+      if (resourcesReady) { 
+        clearInterval(t); 
+        document.getElementById('loadingOverlay').style.display='none'; 
+        _startLevel(n); 
+      }
+    },100);
+  } else _startLevel(n);
+}
+function _startLevel(n){
+  hideAllScreens();
+  document.getElementById('game-container').style.display = 'flex';
+  loadLevel(n);
+}
+
+/* 胜利弹框 */
+const winBox = document.getElementById('winBox');
+const winText = document.getElementById('winText');
+const btnNext = document.getElementById('btnNext');
+const btnReplay = document.getElementById('btnReplay');
+
+btnNext.addEventListener('click', ()=> {
+  if (currentLevel < LEVELS.length) {
+    _startLevel(currentLevel+1);
+    winBox.style.display = 'none';
+  } else {
+    openLevelSelect();
+    winBox.style.display = 'none';
+  }
+});
+btnReplay.addEventListener('click', ()=> {
+  _startLevel(currentLevel);
+  winBox.style.display = 'none';
+});
+
+function showWin(){
+  winText.innerText = `Уровень ${currentLevel} пройден!`;
+  btnNext.style.display = (currentLevel < LEVELS.length) ? 'inline-block' : 'none';
+  winBox.style.display = 'block';
+}
+
+/* 页面初始化 */
+window.onload = () => {
+  buildLevelButtons();
+  openMainMenu();
+  
+  // 添加音乐切换按钮事件监听
+  document.getElementById('toggleMusic').addEventListener('click', toggleMusic);
+  
+  // 为主菜单按钮添加音频初始化
+  document.getElementById('startGameBtn').addEventListener('click', function() {
+    initAudioOnUserInteraction();
+    openLevelSelect();
+  });
+  
+  document.getElementById('levelSelectBtn').addEventListener('click', function() {
+    initAudioOnUserInteraction();
+    openLevelSelect();
+  });
+  
+  // draw initial blank canvas
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+};
+
+</script>
+</body>
+</html>
